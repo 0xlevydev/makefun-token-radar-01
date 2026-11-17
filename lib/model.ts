@@ -1,4 +1,4 @@
-// The token radar's model, radar-2: one frozen snapshot in, one ranked board out.
+// The token radar's model, radar-3: one frozen snapshot in, one ranked board out.
 //
 // The board ranks every pre-token protocol the snapshot carries that can be ranked below the
 // watchlist floor — the watchlist first (the floor, never a ceiling), then every rankable
@@ -10,8 +10,22 @@
 //
 //   category multiple = a shrunk median of the live-token comparables in the same category.
 //     For each category, take the live-token protocols (they already trade, so their market cap
-//     is a fact) and their market-cap-to-TVL ratios. The category multiple is the median ratio,
-//     pulled toward the global median when the category has few comparables:
+//     is a fact) and their market-cap-to-TVL ratios. Two guards keep one noisy protocol from
+//     pricing a whole category — and this snapshot needs both, because the raw ratios run from
+//     0.0003 to 400.2:
+//       1. each ratio is capped at 1.00 before the median: no category is priced above a dollar
+//          of market cap per dollar of TVL. The 75th percentile of all live ratios is about
+//          1.1, so 1.00 is where the market itself stops paying for TVL; above it sits
+//          expectation, not TVL value. A single protocol at 400x (Rain, in Prediction Market)
+//          or 12x (Collateral Management) therefore cannot set its category's price.
+//       2. a category median is trusted only when at least 3 live protocols trade in it
+//          (min_comparables). With fewer, the category uses the global median outright — in
+//          both directions: it pulls an overpriced category down (Risk Curators, one
+//          comparable at 2.97x) and an underpriced one up (Onchain Capital Allocator, two
+//          comparables near 0.01x). With no reliable category signal, the market-wide median
+//          is the honest estimate.
+//     The trusted median is then pulled toward the global median when the category has few
+//     comparables:
 //       multiple = (n * median_category + K * median_global) / (n + K),  K = 4
 //     then clamped to [0.05, 1.00] so no single outlier protocol can set a category's price.
 //     Categories with no live comparables use the global median outright.
@@ -28,6 +42,11 @@
 // that protocol's ratio whole — and the clamp keeps the result inside what the market has ever
 // paid for a dollar of TVL. No protocol name is ever special-cased: the same function scores
 // every row, and the comparables table the dashboard shows is computed from this snapshot.
+// The two guards are the difference from radar-2: under radar-2 a single live protocol at
+// 2.97x priced all eight Risk Curators in the top twelve at x0.79, and a single protocol at
+// 400x priced Prediction Market at the x1.00 cap. Under radar-3 both fall back to the global
+// median, the top of the board spans six categories instead of four, and the largest implied
+// value is about a fifth of its protocol's TVL instead of two thirds.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -66,6 +85,10 @@ export interface ModelConstants {
   multiple_cap: number;
   breadth_weight: number;
   breadth_cap: number;
+  /** No single live ratio above this counts toward a category's median. */
+  ratio_cap: number;
+  /** A category median is trusted only with at least this many live comparables. */
+  min_comparables: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -81,10 +104,12 @@ export const MODEL: ModelConstants = {
   multiple_cap: 1.0,
   breadth_weight: 0.04,
   breadth_cap: 1.2,
+  ratio_cap: 1.0,
+  min_comparables: 3,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -93,7 +118,10 @@ export const LIVE_ROWS = 24;
 export interface CategoryComparable {
   category: string;
   comparables: number;
+  /** The median ratio after the ratio cap: the number the multiple is computed from. */
   median_ratio: number;
+  /** The median ratio before the cap, so the dashboard can show what the guard removed. */
+  raw_median_ratio: number;
   multiple: number;
 }
 
@@ -114,6 +142,8 @@ export interface FarmStep {
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
   rank: number;
+  /** The rank this protocol would hold on TVL alone: the model lift is rank minus tvl_rank. */
+  tvl_rank: number;
   slug: string;
   name: string;
   category: string | null;
@@ -141,6 +171,7 @@ export interface BoardRow {
 /** The dashboard's compact view of one row, with farm plans generated in the page. */
 export interface RadarRow {
   rank: number;
+  tvl_rank: number;
   slug: string;
   name: string;
   category: string | null;
@@ -233,12 +264,19 @@ export function isRankable(p: SnapshotProtocol): boolean {
 
 /**
  * The comparables table: the live-token protocols' market-cap-to-TVL ratios, by category, and the
- * multiple each category gives a pre-token protocol. Ratios come from this snapshot only. A
- * category with few live protocols is pulled toward the global median by the prior, so a lone
- * outlier cannot price a whole category; the clamp keeps every multiple inside [0.05, 1.00].
+ * multiple each category gives a pre-token protocol. Ratios come from this snapshot only.
+ *
+ * Two guards, both motivated by this snapshot's own numbers. First, each ratio is capped at
+ * ratio_cap (1.00) before the median: the live ratios run from 0.0003 to 400.2, and a single
+ * protocol at 400x or 12x is expectation, not TVL value — without the cap it would set its
+ * whole category's price. Second, a category median is trusted only with at least
+ * min_comparables (3) live protocols; with fewer, the category uses the global median outright,
+ * in both directions. A lone outlier therefore cannot price a whole category, and the shrinkage
+ * toward the global median (prior K) only refines categories the market has actually spoken
+ * about. The clamp keeps every multiple inside [0.05, 1.00].
  */
 export function buildComparables(snapshot: Snapshot, model: ModelConstants = MODEL): Comparables {
-  const byCategory = new Map<string, number[]>();
+  const byCategory = new Map<string, { capped: number[]; raw: number[] }>();
   const all: number[] = [];
   for (const p of snapshot.protocols) {
     if (isPreToken(p) || p.category === 'CEX') continue;
@@ -247,18 +285,26 @@ export function buildComparables(snapshot: Snapshot, model: ModelConstants = MOD
     if (!Number.isFinite(ratio) || ratio <= 0) continue;
     all.push(ratio);
     const list = byCategory.get(p.category!);
-    if (list === undefined) byCategory.set(p.category!, [ratio]);
-    else list.push(ratio);
+    if (list === undefined) byCategory.set(p.category!, { capped: [Math.min(model.ratio_cap, ratio)], raw: [ratio] });
+    else {
+      list.capped.push(Math.min(model.ratio_cap, ratio));
+      list.raw.push(ratio);
+    }
   }
   all.sort((a, b) => a - b);
   const globalMedian = medianOf(all);
   const categories: CategoryComparable[] = [];
   for (const [category, ratios] of byCategory) {
-    ratios.sort((a, b) => a - b);
-    const med = medianOf(ratios);
-    const shrunk = (ratios.length * med + model.category_prior * globalMedian) / (ratios.length + model.category_prior);
+    ratios.capped.sort((a, b) => a - b);
+    ratios.raw.sort((a, b) => a - b);
+    const med = medianOf(ratios.capped);
+    const rawMed = medianOf(ratios.raw);
+    const trusted = ratios.capped.length >= model.min_comparables;
+    const shrunk = trusted
+      ? (ratios.capped.length * med + model.category_prior * globalMedian) / (ratios.capped.length + model.category_prior)
+      : globalMedian;
     const multiple = Math.min(model.multiple_cap, Math.max(model.multiple_floor, shrunk));
-    categories.push({ category, comparables: ratios.length, median_ratio: round4(med), multiple: round4(multiple) });
+    categories.push({ category, comparables: ratios.capped.length, median_ratio: round4(med), raw_median_ratio: round4(rawMed), multiple: round4(multiple) });
   }
   categories.sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
   return { global_median: round4(globalMedian), live_count: all.length, categories };
@@ -347,8 +393,13 @@ export function buildBoard(
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  // The TVL rank: the same protocols ordered by TVL alone, so the dashboard can show how far
+  // the model moved each row off the TVL order. Ties break by slug, as the board does.
+  const byTvl = [...scored].sort((a, b) => b.p.tvl_usd - a.p.tvl_usd || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const tvlRank = new Map(byTvl.map((s, i) => [s.p.slug, i + 1]));
   return scored.map((s, i) => ({
     rank: i + 1,
+    tvl_rank: tvlRank.get(s.p.slug)!,
     slug: s.p.slug,
     name: s.p.name,
     category: s.p.category,
@@ -439,31 +490,68 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
+/** How much gas one transaction costs on a protocol's first chain: Ethereum mainnet is the
+ * expensive outlier in this snapshot (424 protocols live there); every other chain the snapshot
+ * names — Arbitrum, Base, Solana, Binance and the rest — settles a simple transaction for
+ * under a dollar. The tiers are ranges, not quotes, and they come from the chain name only. */
+export function gasFor(chain: string): { first: string; setup: string; weekly: string } {
+  if (chain === 'Ethereum') {
+    return { first: '$5–15 of gas for the first transaction', setup: 'about $5–15', weekly: '$5–15 of gas a week' };
+  }
+  return { first: 'under $1 of gas for the first transaction', setup: 'under $1', weekly: 'under $1 of gas a week' };
+}
+
+/** The category's weekly action: the same qualifying move every week, sized at $10, so the
+ * farm plan names what to do instead of "a qualifying action". */
+function weeklyFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('liquid staking') || c.includes('liquid restaking') || c.includes('staking pool')) return 'Claim the staking rewards and restake them once a week.';
+  if (c.includes('restak')) return 'Claim the restaking rewards and restake them once a week.';
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'Borrow $10 against your supply once a week and repay it the same week.';
+  if (c.includes('dex') || c.includes('leveraged farm') || c.includes('liquidity manager')) return 'Swap $10 through the main pool once a week.';
+  if (c.includes('yield aggregator') || c.includes('yield')) return 'Deposit another $10 into the vault once a week.';
+  if (c.includes('bridge')) return 'Bridge $10 to the chain and back once a week.';
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('basis trading')) return 'Open one small hedge once a week and close it the same week.';
+  if (c.includes('prediction')) return 'Place one small market position once a week.';
+  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return 'Deposit another $10 into the vault once a week.';
+  if (c.includes('stable')) return 'Mint or deposit another $10 of the stable asset once a week.';
+  if (c.includes('rwa')) return 'Buy another $10 of the yield asset once a week.';
+  if (c.includes('insurance')) return 'Check the cover terms once a week and top the policy up by $10 if the price moved.';
+  if (c.includes('launchpad')) return 'Check for a new sale once a week and join with $10 when one opens.';
+  if (c.includes('farm')) return 'Deposit another $10 into the farm once a week.';
+  if (c.includes('token locker')) return 'Lock another $10 of the paired asset once a week.';
+  if (c.includes('indexes')) return 'Buy another $10 of the index once a week.';
+  return 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.';
+}
+
 /**
  * A protocol's farm plan: seven steps, each an action with a cost and a time. The plan is derived
  * from the protocol's own record (category, chains, TVL, age, seven-day TVL move), never from a
- * hand-written list of names. The fourth step reads the protocol's own momentum, so a fast-growing
- * protocol and a shrinking one get different instructions.
+ * hand-written list of names. The second step is the category's own action at a capital tier set
+ * by TVL; the third step is the category's weekly action at $10, with gas priced by the first
+ * chain; the fourth step reads the protocol's own momentum, so a fast-growing protocol and a
+ * shrinking one get different instructions.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const action = actionFor(p, capital, chain);
+  const gas = gasFor(chain);
   return [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      cost: gas.first,
       time: '5 minutes',
     },
     {
       text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      cost: `$${capital} of capital and ${gas.setup} of gas`,
       time: '15 minutes to set up',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
+      text: weeklyFor(p),
+      cost: gas.weekly,
       time: '10 minutes a week',
     },
     {
@@ -511,6 +599,7 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 export function radarRow(row: BoardRow): RadarRow {
   return {
     rank: row.rank,
+    tvl_rank: row.tvl_rank,
     slug: row.slug,
     name: row.name,
     category: row.category,

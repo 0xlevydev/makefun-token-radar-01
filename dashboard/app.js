@@ -118,14 +118,41 @@
     if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
     return s;
   }
+  function gasFor(chain) {
+    if (chain === 'Ethereum') {
+      return { first: '$5–15 of gas for the first transaction', setup: 'about $5–15', weekly: '$5–15 of gas a week' };
+    }
+    return { first: 'under $1 of gas for the first transaction', setup: 'under $1', weekly: 'under $1 of gas a week' };
+  }
+  function weeklyFor(p) {
+    var c = (p.category || '').toLowerCase();
+    if (c.indexOf('liquid staking') >= 0 || c.indexOf('liquid restaking') >= 0 || c.indexOf('staking pool') >= 0) return 'Claim the staking rewards and restake them once a week.';
+    if (c.indexOf('restak') >= 0) return 'Claim the restaking rewards and restake them once a week.';
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Borrow $10 against your supply once a week and repay it the same week.';
+    if (c.indexOf('dex') >= 0 || c.indexOf('leveraged farm') >= 0 || c.indexOf('liquidity manager') >= 0) return 'Swap $10 through the main pool once a week.';
+    if (c.indexOf('yield aggregator') >= 0 || c.indexOf('yield') >= 0) return 'Deposit another $10 into the vault once a week.';
+    if (c.indexOf('bridge') >= 0) return 'Bridge $10 to the chain and back once a week.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0 || c.indexOf('basis trading') >= 0) return 'Open one small hedge once a week and close it the same week.';
+    if (c.indexOf('prediction') >= 0) return 'Place one small market position once a week.';
+    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0 || c.indexOf('risk') >= 0) return 'Deposit another $10 into the vault once a week.';
+    if (c.indexOf('stable') >= 0) return 'Mint or deposit another $10 of the stable asset once a week.';
+    if (c.indexOf('rwa') >= 0) return 'Buy another $10 of the yield asset once a week.';
+    if (c.indexOf('insurance') >= 0) return 'Check the cover terms once a week and top the policy up by $10 if the price moved.';
+    if (c.indexOf('launchpad') >= 0) return 'Check for a new sale once a week and join with $10 when one opens.';
+    if (c.indexOf('farm') >= 0) return 'Deposit another $10 into the farm once a week.';
+    if (c.indexOf('token locker') >= 0) return 'Lock another $10 of the paired asset once a week.';
+    if (c.indexOf('indexes') >= 0) return 'Buy another $10 of the index once a week.';
+    return 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.';
+  }
   function farmSteps(p) {
     var chain = chainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
+    var gas = gasFor(chain);
     return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
+      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: gas.first, time: '5 minutes' },
+      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and ' + gas.setup + ' of gas', time: '15 minutes to set up' },
+      { text: weeklyFor(p), cost: gas.weekly, time: '10 minutes a week' },
       { text: momentumText(p), cost: 'no extra capital to check', time: '5 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
       { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
@@ -205,7 +232,8 @@
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Global comparable multiple' }), el('b', { text: fmtMult(DATA.comparables.global_median) }))
+        el('div', { class: 'fact' }, el('span', { text: 'Global comparable multiple' }), el('b', { text: fmtMult(DATA.comparables.global_median) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Categories with a trusted multiple' }), el('b', { text: DATA.comparables.categories.filter(function (c) { return c.comparables >= DATA.model.min_comparables; }).length + ' of ' + DATA.comparables.categories.length }))
       )
     );
   }
@@ -271,7 +299,7 @@
       ),
       el('p', null,
         el('b', { text: 'Category multiple. ' }),
-        'The market does not pay the same price for a dollar of TVL in every line of business. For each category, the multiple is the median market-cap-to-TVL ratio of the live-token protocols in that category — ' + c.live_count + ' live comparables in this snapshot, global median ' + fmtMult(c.global_median) + ' — pulled toward the global median when the category has few comparables (prior ' + m.category_prior + ') and clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + '], so no single outlier prices a whole category. A category with no live comparables uses the global median.'
+        'The market does not pay the same price for a dollar of TVL in every line of business. For each category, the multiple is the median market-cap-to-TVL ratio of the live-token protocols in that category — ' + c.live_count + ' live comparables in this snapshot, global median ' + fmtMult(c.global_median) + ' — but two guards keep one noisy protocol from pricing a whole category. First, each ratio is capped at x' + m.ratio_cap.toFixed(2) + ' before the median: the live ratios in this snapshot run from x0.0003 to x400.20, and above x1.00 sits expectation, not TVL value. Second, a category median is trusted only when at least ' + m.min_comparables + ' live protocols trade in it; with fewer, the category uses the global median outright, in both directions. What is left is shrunk toward the global median (prior ' + m.category_prior + ') and clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + '], so no single outlier prices a whole category. A category with no live comparables uses the global median.'
       ),
       el('p', null,
         el('b', { text: 'Growth, maturity, breadth. ' }),
@@ -285,16 +313,20 @@
     var list = DATA.comparables.categories.slice().sort(function (a, b) { return b.multiple - a.multiple || (a.category < b.category ? -1 : 1); });
     var tbody = el('tbody');
     list.forEach(function (c) {
+      var medianText = fmtMult(c.median_ratio);
+      if (c.raw_median_ratio !== undefined && c.raw_median_ratio !== null && c.raw_median_ratio !== c.median_ratio) {
+        medianText += ' (raw ' + fmtMult(c.raw_median_ratio) + ')';
+      }
       tbody.appendChild(el('tr', null,
         el('td', null, el('b', { text: c.category })),
         el('td', { class: 'num', text: String(c.comparables) }),
-        el('td', { class: 'num', text: fmtMult(c.median_ratio) }),
+        el('td', { class: 'num', text: medianText }),
         el('td', { class: 'num', text: fmtMult(c.multiple) })
       ));
     });
     return el('section', { class: 'panel comps' },
       el('h2', { text: 'What the market pays, by category' }),
-      el('p', { class: 'sub', text: 'Live-token comparables from this snapshot: the median market-cap-to-TVL ratio per category, and the shrunk multiple the model applies. Categories with few comparables are pulled toward the global median of ' + fmtMult(DATA.comparables.global_median) + '.' }),
+      el('p', { class: 'sub', text: 'Live-token comparables from this snapshot: the median market-cap-to-TVL ratio per category, and the multiple the model applies. Each ratio is capped at x' + DATA.model.ratio_cap.toFixed(2) + ' before the median, and a category with fewer than ' + DATA.model.min_comparables + ' live comparables uses the global median of ' + fmtMult(DATA.comparables.global_median) + ' instead of its own. Where the raw median differs, it is shown in brackets.' }),
       el('div', { class: 'table-wrap' },
         el('table', null,
           el('caption', { class: 'sub', text: 'One row per category with at least one live-token protocol. Sorted by the multiple the model applies.' }),
@@ -325,6 +357,9 @@
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
       var watch = isWatchlist(r);
+      var lift = (r.tvl_rank === null || r.tvl_rank === undefined) ? null : r.tvl_rank - r.rank;
+      var liftText = lift === null ? 'n/a' : lift === 0 ? '—' : (lift > 0 ? '▲' + lift : '▼' + (-lift));
+      var liftClass = lift === null || lift === 0 ? '' : lift > 0 ? 'pos' : 'neg';
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         class: watch ? 'watch' : null,
@@ -333,6 +368,7 @@
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
         el('td', { class: 'num', text: String(r.rank) }),
+        el('td', { class: 'num lift ' + liftClass, text: liftText }),
         el('td', null, el('div', { class: 'name' },
           el('span', null, el('b', { text: r.name }), watch ? el('span', { class: 'tag', text: ' WATCH' }) : null),
           el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') })
@@ -352,9 +388,10 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan. A gold edge marks the watchlist.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan. A gold edge marks the watchlist. "vs TVL" is how far the model moved the row off the pure TVL order: up when its category, growth or age earned it a higher rank.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
+            el('th', { scope: 'col', text: 'vs TVL' }),
             sortHeader('name', 'Protocol'),
             sortHeader('tvl', 'TVL'),
             sortHeader('growth', '7d'),
@@ -404,6 +441,22 @@
     dialog.textContent = '';
     var steps = farmSteps(row);
     var recomputed = impliedOf(row, DATA.model);
+    var lift = (row.tvl_rank === null || row.tvl_rank === undefined) ? null : row.tvl_rank - row.rank;
+    var liftText = lift === null ? 'n/a' : lift === 0 ? 'same as its TVL rank' : (lift > 0 ? '▲' + lift + ' places above its TVL rank' : '▼' + (-lift) + ' places below its TVL rank');
+    var comp = null;
+    if (DATA.comparables && DATA.comparables.categories) {
+      for (var ci = 0; ci < DATA.comparables.categories.length; ci++) {
+        if (DATA.comparables.categories[ci].category === row.category) { comp = DATA.comparables.categories[ci]; break; }
+      }
+    }
+    var compText;
+    if (!comp) {
+      compText = (row.category || 'Other') + ' has no live-token comparables in this snapshot, so the model prices it at the global median ' + fmtMult(DATA.comparables.global_median) + '.';
+    } else if (comp.comparables < DATA.model.min_comparables) {
+      compText = (row.category || 'Other') + ' has only ' + comp.comparables + ' live comparable' + (comp.comparables === 1 ? '' : 's') + ', so the model does not trust its own median (raw ' + fmtMult(comp.raw_median_ratio) + ', capped ' + fmtMult(comp.median_ratio) + ') and uses the global median ' + fmtMult(DATA.comparables.global_median) + ' instead.';
+    } else {
+      compText = (row.category || 'Other') + ' has ' + comp.comparables + ' live comparables, median ratio ' + fmtMult(comp.median_ratio) + (comp.raw_median_ratio !== comp.median_ratio ? ' (raw ' + fmtMult(comp.raw_median_ratio) + ')' : '') + ', giving the multiple ' + fmtMult(row.category_multiple) + '.';
+    }
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (isWatchlist(row) ? ' — watchlist' : '') }),
@@ -422,8 +475,11 @@
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: fmtMult(row.maturity_multiplier) })),
         el('div', null, el('span', { text: 'Chains (' + (row.chains || []).length + ')' }), el('b', { class: 'num', text: fmtMult(row.breadth_multiplier) })),
+        el('div', null, el('span', { text: 'TVL rank' }), el('b', { class: 'num', text: row.tvl_rank === null || row.tvl_rank === undefined ? 'n/a' : String(row.tvl_rank) })),
+        el('div', null, el('span', { text: 'Model lift' }), el('b', { class: 'num', text: liftText })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
+      el('p', { class: 'sub', text: compText }),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
